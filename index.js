@@ -1,67 +1,21 @@
 const http = require('http');
-const fs = require('fs');
-const path = require('path');
 const { URL } = require('url');
-const JSON_RPC_VERSION = '2.0';
+const dotenv = require('dotenv');
+const { Server } = require('@modelcontextprotocol/sdk/server');
+const { StdioServerTransport } = require('@modelcontextprotocol/sdk/server/stdio.js');
+const { StreamableHTTPServerTransport } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
+const {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+} = require('@modelcontextprotocol/sdk/types.js');
+
 const SERVER_NAME = 'zoho-mcp';
 const SERVER_VERSION = '1.1.0';
 
-class TokenCache {
-  constructor() {
-    this.store = new Map();
-  }
-
-  get(key) {
-    const entry = this.store.get(key);
-    if (!entry) return null;
-    if (Date.now() >= entry.expiresAt) {
-      this.store.delete(key);
-      return null;
-    }
-    return entry.token;
-  }
-
-  set(key, token, expiresInSeconds) {
-    const safeTtlMs = Math.max((Number(expiresInSeconds) || 3600) - 60, 60) * 1000;
-    this.store.set(key, { token, expiresAt: Date.now() + safeTtlMs });
-  }
-}
-
-const tokenCache = new TokenCache();
-
-function loadDotEnvFile() {
-  const envPath = path.join(process.cwd(), '.env');
-  if (!fs.existsSync(envPath)) return;
-
-  const content = fs.readFileSync(envPath, 'utf8');
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith('#')) continue;
-
-    const separatorIndex = line.indexOf('=');
-    if (separatorIndex === -1) continue;
-
-    const key = line.slice(0, separatorIndex).trim();
-    if (!key || process.env[key] !== undefined) continue;
-
-    let value = line.slice(separatorIndex + 1).trim();
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-
-    process.env[key] = value;
-  }
-}
+dotenv.config();
 
 function env(name, fallback = undefined) {
   return process.env[name] || fallback;
-}
-
-function getHeader(headers, name) {
-  return headers?.[name.toLowerCase()];
 }
 
 function getConfigValue(envName, fallback = undefined) {
@@ -79,8 +33,8 @@ function normalizeMethod(method = 'GET') {
   return String(method || 'GET').toUpperCase();
 }
 
-function buildUrl(baseUrl, path, query = {}) {
-  const url = new URL(`${baseUrl.replace(/\/+$/, '')}/${stripLeadingSlash(path)}`);
+function buildUrl(baseUrl, requestPath, query = {}) {
+  const url = new URL(`${baseUrl.replace(/\/+$/, '')}/${stripLeadingSlash(requestPath)}`);
   for (const [key, value] of Object.entries(query || {})) {
     if (value === undefined || value === null) continue;
     if (Array.isArray(value)) {
@@ -92,18 +46,6 @@ function buildUrl(baseUrl, path, query = {}) {
     url.searchParams.set(key, String(value));
   }
   return url.toString();
-}
-
-function jsonResponse(id, result) {
-  return { jsonrpc: JSON_RPC_VERSION, id, result };
-}
-
-function errorResponse(id, code, message, data = undefined) {
-  return {
-    jsonrpc: JSON_RPC_VERSION,
-    id,
-    error: { code, message, ...(data === undefined ? {} : { data }) },
-  };
 }
 
 function toolResult(payload) {
@@ -131,10 +73,10 @@ async function readJsonBody(req) {
   return raw ? parseJson(raw) : null;
 }
 
-function resolveZohoConfig(headers = {}) {
+function resolveZohoConfig(_headers = {}) {
   const dataCenter = getConfigValue('ZOHO_DATA_CENTER', 'com');
 
-  const config = {
+  return {
     dataCenter,
     accountsBaseUrl: getConfigValue('ZOHO_ACCOUNTS_BASE_URL', `https://accounts.zoho.${dataCenter}`),
     crmBaseUrl: getConfigValue('ZOHO_CRM_BASE_URL', `https://www.zohoapis.${dataCenter}/crm/v6`),
@@ -142,28 +84,12 @@ function resolveZohoConfig(headers = {}) {
     clientId: getConfigValue('ZOHO_CLIENT_ID'),
     clientSecret: getConfigValue('ZOHO_CLIENT_SECRET'),
     refreshToken: getConfigValue('ZOHO_REFRESH_TOKEN'),
-    crmAccessToken:
-      env('ZOHO_CRM_ACCESS_TOKEN') ||
-      env('ZOHO_ACCESS_TOKEN'),
-    mailAccessToken:
-      env('ZOHO_MAIL_ACCESS_TOKEN') ||
-      env('ZOHO_ACCESS_TOKEN'),
+    crmAccessToken: env('ZOHO_CRM_ACCESS_TOKEN') || env('ZOHO_ACCESS_TOKEN'),
+    mailAccessToken: env('ZOHO_MAIL_ACCESS_TOKEN') || env('ZOHO_ACCESS_TOKEN'),
   };
-
-  return config;
 }
 
 async function refreshZohoAccessToken(config, product) {
-  const cacheKey = [
-    product,
-    config.accountsBaseUrl,
-    config.clientId,
-    config.refreshToken,
-  ].join('|');
-
-  const cached = tokenCache.get(cacheKey);
-  if (cached) return cached;
-
   if (!config.clientId || !config.clientSecret || !config.refreshToken) {
     throw new Error(
       `Missing Zoho ${product} credentials. Set ZOHO_${product.toUpperCase()}_ACCESS_TOKEN or ZOHO_ACCESS_TOKEN, or set ZOHO_CLIENT_ID, ZOHO_CLIENT_SECRET, and ZOHO_REFRESH_TOKEN in env.`
@@ -189,7 +115,6 @@ async function refreshZohoAccessToken(config, product) {
     throw new Error(`Zoho token refresh failed: ${JSON.stringify(payload)}`);
   }
 
-  tokenCache.set(cacheKey, payload.access_token, payload.expires_in || 3600);
   return payload.access_token;
 }
 
@@ -260,7 +185,7 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
   let payload = text;
   try {
     payload = text ? JSON.parse(text) : null;
-  } catch (_err) {
+  } catch (_error) {
     payload = text;
   }
 
@@ -502,81 +427,130 @@ async function handleToolCall(name, args, requestHeaders) {
   throw new Error(`Unknown tool: ${name}`);
 }
 
-async function handleMcpMessage(message, requestHeaders = {}) {
-  if (!message || typeof message !== 'object') {
-    return errorResponse(null, -32600, 'Invalid Request');
+function createMcpServer() {
+  const server = new Server(
+    {
+      name: SERVER_NAME,
+      version: SERVER_VERSION,
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    }
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: TOOL_DEFINITIONS,
+  }));
+
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const headers = extra.requestInfo?.headers || {};
+    return handleToolCall(request.params.name, request.params.arguments || {}, headers);
+  });
+
+  return server;
+}
+
+async function handleCallback(requestUrl, port, res) {
+  const code = requestUrl.searchParams.get('code');
+  const location = requestUrl.searchParams.get('location');
+  const accountsServer = requestUrl.searchParams.get('accounts-server');
+  const redirectUri = env('ZOHO_REDIRECT_URI', `http://localhost:${port}/callback`);
+  const clientId = env('ZOHO_CLIENT_ID');
+  const clientSecret = env('ZOHO_CLIENT_SECRET');
+
+  if (code && clientId && clientSecret) {
+    try {
+      const tokenResponse = await exchangeZohoAuthorizationCode({
+        accountsBaseUrl: accountsServer || 'https://accounts.zoho.com',
+        clientId,
+        clientSecret,
+        redirectUri,
+        code,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        server: SERVER_NAME,
+        version: SERVER_VERSION,
+        message: 'Authorization code exchanged successfully. Persist the refresh_token in your .env.',
+        redirectUri,
+        tokenResponse,
+        envToPersist: {
+          ZOHO_CLIENT_ID: clientId,
+          ZOHO_CLIENT_SECRET: '<already set>',
+          ZOHO_REFRESH_TOKEN: tokenResponse.refresh_token || '<not returned>',
+        },
+      }));
+      return;
+    } catch (error) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: false,
+        server: SERVER_NAME,
+        version: SERVER_VERSION,
+        message: error.message,
+        code,
+        redirectUri,
+      }));
+      return;
+    }
   }
 
-  const { id, method, params } = message;
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    ok: true,
+    server: SERVER_NAME,
+    version: SERVER_VERSION,
+    message: 'Authorization code received. Exchange this code at the Zoho token endpoint to get refresh_token and access_token.',
+    code,
+    location,
+    accountsServer,
+    nextStep: {
+      method: 'POST',
+      url: `${accountsServer || 'https://accounts.zoho.com'}/oauth/v2/token`,
+      contentType: 'application/x-www-form-urlencoded',
+      body: {
+        grant_type: 'authorization_code',
+        client_id: clientId || '<set ZOHO_CLIENT_ID>',
+        client_secret: clientSecret ? '<from env>' : '<set ZOHO_CLIENT_SECRET>',
+        redirect_uri: redirectUri,
+        code: code || '<missing code>',
+      },
+    },
+  }));
+}
+
+async function handleMcpHttpRequest(req, res, parsedBody) {
+  const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined,
+    enableJsonResponse: true,
+  });
 
   try {
-    if (method === 'initialize') {
-      return jsonResponse(id, {
-        protocolVersion: '2024-11-05',
-        capabilities: {
-          tools: {},
-        },
-        serverInfo: {
-          name: SERVER_NAME,
-          version: SERVER_VERSION,
-        },
-      });
-    }
+    res.on('close', async () => {
+      await transport.close().catch(() => {});
+      await server.close().catch(() => {});
+    });
 
-    if (method === 'notifications/initialized') {
-      return null;
-    }
-
-    if (method === 'tools/list') {
-      return jsonResponse(id, { tools: TOOL_DEFINITIONS });
-    }
-
-    if (method === 'tools/call') {
-      const result = await handleToolCall(params?.name, params?.arguments || {}, requestHeaders);
-      return jsonResponse(id, result);
-    }
-
-    return errorResponse(id, -32601, `Method not found: ${method}`);
+    await server.connect(transport);
+    await transport.handleRequest(req, res, parsedBody);
   } catch (error) {
-    return errorResponse(id, -32000, error.message);
-  }
-}
-
-function writeStdioMessage(message) {
-  const json = JSON.stringify(message);
-  const payload = `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
-  process.stdout.write(payload);
-}
-
-function startStdioServer() {
-  let buffer = Buffer.alloc(0);
-
-  process.stdin.on('data', async chunk => {
-    buffer = Buffer.concat([buffer, chunk]);
-
-    while (true) {
-      const headerEnd = buffer.indexOf('\r\n\r\n');
-      if (headerEnd === -1) return;
-
-      const headerText = buffer.slice(0, headerEnd).toString('utf8');
-      const match = headerText.match(/Content-Length:\s*(\d+)/i);
-      if (!match) {
-        buffer = Buffer.alloc(0);
-        return;
-      }
-
-      const contentLength = Number(match[1]);
-      const totalLength = headerEnd + 4 + contentLength;
-      if (buffer.length < totalLength) return;
-
-      const body = buffer.slice(headerEnd + 4, totalLength).toString('utf8');
-      buffer = buffer.slice(totalLength);
-
-      const message = parseJson(body);
-      const response = await handleMcpMessage(message, {});
-      if (response) writeStdioMessage(response);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: -32603,
+          message: error.message,
+        },
+        id: null,
+      }));
     }
-  });
+  }
 }
 
 function startHttpServer(port) {
@@ -609,74 +583,7 @@ function startHttpServer(port) {
     }
 
     if (req.method === 'GET' && requestUrl.pathname === '/callback') {
-      const code = requestUrl.searchParams.get('code');
-      const location = requestUrl.searchParams.get('location');
-      const accountsServer = requestUrl.searchParams.get('accounts-server');
-      const redirectUri = env('ZOHO_REDIRECT_URI', `http://localhost:${port}/callback`);
-      const clientId = env('ZOHO_CLIENT_ID');
-      const clientSecret = env('ZOHO_CLIENT_SECRET');
-
-      if (code && clientId && clientSecret) {
-        try {
-          const tokenResponse = await exchangeZohoAuthorizationCode({
-            accountsBaseUrl: accountsServer || 'https://accounts.zoho.com',
-            clientId,
-            clientSecret,
-            redirectUri,
-            code,
-          });
-
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            ok: true,
-            server: SERVER_NAME,
-            version: SERVER_VERSION,
-            message: 'Authorization code exchanged successfully. Persist the refresh_token in your .env.',
-            redirectUri,
-            tokenResponse,
-            envToPersist: {
-              ZOHO_CLIENT_ID: clientId,
-              ZOHO_CLIENT_SECRET: '<already set>',
-              ZOHO_REFRESH_TOKEN: tokenResponse.refresh_token || '<not returned>',
-            },
-          }));
-          return;
-        } catch (error) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({
-            ok: false,
-            server: SERVER_NAME,
-            version: SERVER_VERSION,
-            message: error.message,
-            code,
-            redirectUri,
-          }));
-          return;
-        }
-      }
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        ok: true,
-        server: SERVER_NAME,
-        version: SERVER_VERSION,
-        message: 'Authorization code received. Exchange this code at the Zoho token endpoint to get refresh_token and access_token.',
-        code,
-        location,
-        accountsServer,
-        nextStep: {
-          method: 'POST',
-          url: `${accountsServer || 'https://accounts.zoho.com'}/oauth/v2/token`,
-          contentType: 'application/x-www-form-urlencoded',
-          body: {
-            grant_type: 'authorization_code',
-            client_id: clientId || '<set ZOHO_CLIENT_ID>',
-            client_secret: clientSecret ? '<from env>' : '<set ZOHO_CLIENT_SECRET>',
-            redirect_uri: redirectUri,
-            code: code || '<missing code>',
-          },
-        },
-      }));
+      await handleCallback(requestUrl, port, res);
       return;
     }
 
@@ -687,19 +594,20 @@ function startHttpServer(port) {
     }
 
     try {
-      const message = await readJsonBody(req);
-      const response = await handleMcpMessage(message, req.headers);
-      if (!response) {
-        res.writeHead(204);
-        res.end();
-        return;
-      }
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(response));
+      const parsedBody = await readJsonBody(req);
+      await handleMcpHttpRequest(req, res, parsedBody);
     } catch (error) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(errorResponse(null, -32000, error.message)));
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: error.message,
+          },
+          id: null,
+        }));
+      }
     }
   });
 
@@ -712,18 +620,26 @@ function startHttpServer(port) {
   });
 }
 
-function main() {
-  loadDotEnvFile();
+async function startStdioServer() {
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+}
+
+async function main() {
   const transport = env('MCP_TRANSPORT', 'stdio').toLowerCase();
   if (transport === 'http') {
-    const port = Number(env('PORT', '3000'));
+    const port = Number(env('PORT', '3001'));
     startHttpServer(port);
     return;
   }
 
   console.error(`[${SERVER_NAME}] version=${SERVER_VERSION} transport=stdio`);
   console.error(`[${SERVER_NAME}] tools=${TOOL_NAMES.join(', ')}`);
-  startStdioServer();
+  await startStdioServer();
 }
 
-main();
+main().catch(error => {
+  console.error(`[${SERVER_NAME}] fatal=${error.message}`);
+  process.exit(1);
+});
