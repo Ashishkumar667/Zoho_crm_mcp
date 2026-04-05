@@ -582,10 +582,21 @@ function startHttpServer(port) {
       return;
     }
 
-    if (req.method === 'GET' && requestUrl.pathname === '/callback') {
-      await handleCallback(requestUrl, port, res);
-      return;
+    if (req.method === 'GET' && requestUrl.pathname === '/mcp') {
+      const code = requestUrl.searchParams.get('code');
+
+     if (code) {
+       await handleCallback(requestUrl, port, res);
+       return;
     }
+
+  // If no code → normal info response
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    message: 'MCP endpoint is live. Use POST for tool calls.',
+  }));
+  return;
+}
 
     if (req.method !== 'POST' || requestUrl.pathname !== '/mcp') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
