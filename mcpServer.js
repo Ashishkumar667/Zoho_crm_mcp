@@ -405,6 +405,7 @@ function buildUrl(baseUrl, requestPath, query = {}) {
 
 // ─── Token Cache (per user, keyed by refresh token) ──────────────────────────
 
+// Map<refreshToken -> { crm: {token, expiresAt}, mail: {token, expiresAt} }>
 const tokenCache = new Map();
 
 function getCachedToken(product, refreshToken) {
@@ -454,11 +455,24 @@ async function refreshZohoAccessToken(config, product) {
     client_secret: config.clientSecret,
     refresh_token: config.refreshToken,
   });
-  const response = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000); // 10s timeout
+
+  let response;
+  try {
+    response = await fetch(tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    throw new Error(`Zoho token refresh timed out or failed: ${err.message}`);
+  } finally {
+    clearTimeout(timeout);
+  }
+
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.access_token) {
     throw new Error(`Zoho token refresh failed: ${JSON.stringify(payload)}`);
@@ -735,6 +749,19 @@ app.get('/health', (req, res) => {
 // ─── Start ────────────────────────────────────────────────────────────────────
 
 const PORT = Number(env('PORT', '3000'));
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`[${SERVER_NAME}] v${SERVER_VERSION} listening on port ${PORT}`);
-});
+  // Pre-warm token cache on startup so first request doesn't hit Zoho auth
+  try {
+    await getZohoAccessToken('crm');
+    console.log(`[${SERVER_NAME}] CRM token pre-warmed`);
+  } catch (e) {
+    console.warn(`[${SERVER_NAME}] CRM token pre-warm failed: ${e.message}`);
+  }
+  try {
+    await getZohoAccessToken('mail');
+    console.log(`[${SERVER_NAME}] Mail token pre-warmed`);
+  } catch (e) {
+    console.warn(`[${SERVER_NAME}] Mail token pre-warm failed: ${e.message}`);
+  }
+});   
