@@ -405,7 +405,6 @@ function buildUrl(baseUrl, requestPath, query = {}) {
 
 // ─── Token Cache (per user, keyed by refresh token) ──────────────────────────
 
-// Map<refreshToken -> { crm: {token, expiresAt}, mail: {token, expiresAt} }>
 const tokenCache = new Map();
 
 function getCachedToken(product, refreshToken) {
@@ -668,10 +667,7 @@ function getServer() {
             crm:  { baseUrl: config.crmBaseUrl,  accessTokenSource: config.crmAccessToken  ? 'env access token' : 'refresh token flow' },
             mail: { baseUrl: config.mailBaseUrl, accessTokenSource: config.mailAccessToken ? 'env access token' : 'refresh token flow' },
             sharedRefreshCredentialsAvailable: Boolean(config.clientId && config.clientSecret && config.refreshToken),
-            tokenCacheStatus: {
-              crm:  tokenCache.crm.token  ? `cached, expires in ${Math.round((tokenCache.crm.expiresAt  - Date.now()) / 1000)}s` : 'not cached',
-              mail: tokenCache.mail.token ? `cached, expires in ${Math.round((tokenCache.mail.expiresAt - Date.now()) / 1000)}s` : 'not cached',
-            },
+            tokenCacheUsers: tokenCache.size,
           }, null, 2),
         }],
       };
