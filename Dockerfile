@@ -2,8 +2,10 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-COPY package.json ./
-COPY index.js ./
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+
+COPY mcpServer.js ./
 # COPY ZOHO_MCP_DEPLOYMENT.txt ./
 # COPY .env.example ./
 
