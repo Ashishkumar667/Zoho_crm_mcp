@@ -209,13 +209,12 @@ function getServer() {
       path:    z.string().describe('Zoho CRM API path, e.g. Contacts or Contacts/search.'),
       method:  z.string().optional().default('GET').describe('HTTP method: GET, POST, PUT, PATCH, DELETE.'),
       query:   z.record(z.string(), z.string()).optional().describe('Optional query string parameters.'),
-      body:    z.string().optional().describe('Optional JSON request body as a JSON string.'),
+      body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
       headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
     },
     async (args) => {
-      const parsedBody = args.body ? JSON.parse(args.body) : undefined;
       return {
-        content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'crm', ...args, body: parsedBody }), null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'crm', ...args }), null, 2) }],
       };
     }
   );
@@ -228,13 +227,47 @@ function getServer() {
       path:    z.string().describe('Zoho Mail API path, e.g. accounts or accounts/{accountId}/messages/view.'),
       method:  z.string().optional().default('GET').describe('HTTP method: GET, POST, PUT, PATCH, DELETE.'),
       query:   z.record(z.string(), z.string()).optional().describe('Optional query string parameters.'),
-      body:    z.string().optional().describe('Optional JSON request body as a JSON string.'),
+      body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
       headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
     },
     async (args) => {
-      const parsedBody = args.body ? JSON.parse(args.body) : undefined;
       return {
-        content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'mail', ...args, body: parsedBody }), null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'mail', ...args }), null, 2) }],
+      };
+    }
+  );
+
+  // zoho_mail_send_message
+  server.tool(
+    'zoho_mail_send_message',
+    'Send an email through a Zoho Mail account. Use this instead of zoho_mail_request when sending mail so required fields are explicit.',
+    {
+      accountId: z.string().describe('Zoho Mail account ID.'),
+      fromAddress: z.string().describe('Sender email address. Must exist in the Zoho Mail account you are sending from.'),
+      toAddress: z.string().describe('Recipient email address. For multiple recipients, send a comma-separated string if Zoho accepts it for your account.'),
+      subject: z.string().describe('Email subject line.'),
+      content: z.string().describe('Email body content. HTML is allowed if supported by the target Zoho Mail API endpoint.'),
+      askReceipt: z.string().optional().default('no').describe('Delivery or read receipt flag expected by Zoho Mail. Usually "no" or "yes".'),
+      ccAddress: z.string().optional().describe('Optional CC email address string.'),
+      bccAddress: z.string().optional().describe('Optional BCC email address string.'),
+      mailFormat: z.string().optional().describe('Optional mail format value if required by Zoho Mail.'),
+    },
+    async (args) => {
+      const { accountId, ...body } = args;
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify(
+            await zohoRequest({
+              product: 'mail',
+              method: 'POST',
+              path: `accounts/${accountId}/messages`,
+              body,
+            }),
+            null,
+            2
+          ),
+        }],
       };
     }
   );
