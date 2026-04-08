@@ -31,6 +31,30 @@ function normalizeMethod(method = 'GET') {
   return String(method || 'GET').toUpperCase();
 }
 
+function getTimeoutMs(name, fallback) {
+  const raw = process.env[name];
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs, label) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function buildUrl(baseUrl, requestPath, query = {}) {
   const url = new URL(`${baseUrl.replace(/\/+$/, '')}/${stripLeadingSlash(requestPath)}`);
   for (const [key, value] of Object.entries(query || {})) {
@@ -74,11 +98,16 @@ async function refreshZohoAccessToken(config, product) {
     client_secret: config.clientSecret,
     refresh_token: config.refreshToken,
   });
-  const response = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  const response = await fetchWithTimeout(
+    tokenUrl,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    },
+    getTimeoutMs('ZOHO_TOKEN_TIMEOUT_MS', 15000),
+    `Zoho ${product} token refresh`
+  );
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.access_token) {
     throw new Error(`Zoho token refresh failed: ${JSON.stringify(payload)}`);
@@ -98,12 +127,19 @@ async function exchangeZohoAuthorizationCode({ accountsBaseUrl, clientId, client
     redirect_uri:  redirectUri,
     code,
   });
-  const response = await fetch(tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  const response = await fetchWithTimeout(
+    tokenUrl,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    },
+    getTimeoutMs('ZOHO_TOKEN_TIMEOUT_MS', 15000),
+    'Zoho authorization code exchange'
+  );
+  console.log(`Zoho token exchange response status: ${response.status}`);
   const payload = await response.json().catch(() => ({}));
+  console.log(`Zoho token exchange response payload: ${JSON.stringify(payload)}`);
   if (!response.ok) throw new Error(`Zoho authorization code exchange failed: ${JSON.stringify(payload)}`);
   return payload;
 }
@@ -121,6 +157,7 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
   const baseUrl = product === 'crm' ? config.crmBaseUrl : config.mailBaseUrl;
   const url = buildUrl(baseUrl, path, query);
   const normalizedMethod = normalizeMethod(method);
+  const startedAt = Date.now();
 
   const outboundHeaders = {
     Authorization: `Zoho-oauthtoken ${token}`,
@@ -134,17 +171,23 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
     outboundBody = JSON.stringify(body);
   }
 
-  const response = await fetch(url, {
-    method: normalizedMethod,
-    headers: outboundHeaders,
-    body: outboundBody,
-  });
+  console.log(`[zoho-mcp] upstream start product=${product} method=${normalizedMethod} url=${url}`);
+  const response = await fetchWithTimeout(
+    url,
+    {
+      method: normalizedMethod,
+      headers: outboundHeaders,
+      body: outboundBody,
+    },
+    getTimeoutMs('ZOHO_API_TIMEOUT_MS', 25000),
+    `Zoho ${product} request ${normalizedMethod} ${path}`
+  );
 
   const text = await response.text();
   let payload = text;
   try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = text; }
 
-  return {
+  const result = {
     ok: response.ok,
     status: response.status,
     statusText: response.statusText,
@@ -152,12 +195,16 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
     request: { product, method: normalizedMethod, url },
     response: payload,
   };
+  console.log(
+    `[zoho-mcp] upstream done product=${product} method=${normalizedMethod} status=${response.status} durationMs=${Date.now() - startedAt}`
+  );
+  return result;
 }
 
 //mcp-server factory
 function getServer() {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-
+  console.log("server is updating..", server);
   // zoho_oauth_helper
   server.tool(
     'zoho_oauth_helper',
@@ -299,11 +346,19 @@ function getServer() {
 //routes
 app.post('/mcp', async (req, res) => {
   try {
+    const acceptHeader = String(req.headers.accept || '');
+    if (!acceptHeader.includes('application/json') || !acceptHeader.includes('text/event-stream')) {
+      req.headers.accept = 'application/json, text/event-stream';
+    }
+    console.log('Received MCP request with headers:', req.headers);
+    console.log('Received MCP request with body:', req.body);
     const server = getServer();
+    console.log('MCP server instance created');
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
+    console.log('StreamableHTTPServerTransport instance created', transport);
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
     res.on('close', async () => {
