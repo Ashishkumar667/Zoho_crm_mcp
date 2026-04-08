@@ -436,6 +436,7 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function env(name, fallback = undefined) {
   return process.env[name] || fallback;
@@ -488,6 +489,7 @@ function buildUrl(baseUrl, requestPath, query = {}) {
   return url.toString();
 }
 
+// ─── Zoho Auth ──────────────────────────────────────────────────────────────
 
 function resolveZohoConfig() {
   const dataCenter = getConfigValue('ZOHO_DATA_CENTER', 'com');
@@ -557,9 +559,7 @@ async function exchangeZohoAuthorizationCode({ accountsBaseUrl, clientId, client
     getTimeoutMs('ZOHO_TOKEN_TIMEOUT_MS', 15000),
     'Zoho authorization code exchange'
   );
-  console.log(`Zoho token exchange response status: ${response.status}`);
   const payload = await response.json().catch(() => ({}));
-  console.log(`Zoho token exchange response payload: ${JSON.stringify(payload)}`);
   if (!response.ok) throw new Error(`Zoho authorization code exchange failed: ${JSON.stringify(payload)}`);
   return payload;
 }
@@ -577,7 +577,7 @@ async function getZohoAccessToken(product) {
 async function zohoRequest({ product, method, path, query, body, headers: extraHeaders }) {
   console.log(`Resolving access token for Zoho ${product} request...`);
   const { token, config, source } = await getZohoAccessToken(product);
-  console.log(`Using Zoho ${product} access token from ${source}`);
+  console.log(`Using Zoho ${product} access token from: ${source}`);
   const baseUrl = product === 'crm' ? config.crmBaseUrl : config.mailBaseUrl;
   const url = buildUrl(baseUrl, path, query);
   const normalizedMethod = normalizeMethod(method);
@@ -621,11 +621,15 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
   return result;
 }
 
+// ─── MCP Server (singleton) ──────────────────────────────────────────────────
+// One McpServer for the lifetime of the process.
+// One NEW transport per request — transport holds per-request HTTP state.
+// server.connect(transport) per request is supported by the SDK in stateless mode.
+// server.close() is NEVER called — only transport.close() on request end.
 
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
 
-  // zoho_oauth_helper
   server.tool(
     'zoho_oauth_helper',
     'Build a Zoho OAuth authorization URL and show the token exchange request needed to obtain the first access token and refresh token.',
@@ -668,7 +672,6 @@ function createMcpServer() {
     }
   );
 
-  // zoho_crm_request
   server.tool(
     'zoho_crm_request',
     'Call any Zoho CRM REST API endpoint. Auth is resolved from environment variables only.',
@@ -679,14 +682,11 @@ function createMcpServer() {
       body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
       headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
     },
-    async (args) => {
-      return {
-        content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'crm', ...args }), null, 2) }],
-      };
-    }
+    async (args) => ({
+      content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'crm', ...args }), null, 2) }],
+    })
   );
 
-  // zoho_mail_request
   server.tool(
     'zoho_mail_request',
     'Call any Zoho Mail REST API endpoint. Auth is resolved from environment variables only.',
@@ -697,27 +697,24 @@ function createMcpServer() {
       body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
       headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
     },
-    async (args) => {
-      return {
-        content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'mail', ...args }), null, 2) }],
-      };
-    }
+    async (args) => ({
+      content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'mail', ...args }), null, 2) }],
+    })
   );
 
-  // zoho_mail_send_message
   server.tool(
     'zoho_mail_send_message',
     'Send an email through a Zoho Mail account. Use this instead of zoho_mail_request when sending mail so required fields are explicit.',
     {
       accountId:   z.string().describe('Zoho Mail account ID.'),
       fromAddress: z.string().describe('Sender email address. Must exist in the Zoho Mail account you are sending from.'),
-      toAddress:   z.string().describe('Recipient email address. For multiple recipients, send a comma-separated string if Zoho accepts it for your account.'),
+      toAddress:   z.string().describe('Recipient email address. Comma-separated for multiple.'),
       subject:     z.string().describe('Email subject line.'),
-      content:     z.string().describe('Email body content. HTML is allowed if supported by the target Zoho Mail API endpoint.'),
-      askReceipt:  z.string().optional().default('no').describe('Delivery or read receipt flag expected by Zoho Mail. Usually "no" or "yes".'),
-      ccAddress:   z.string().optional().describe('Optional CC email address string.'),
-      bccAddress:  z.string().optional().describe('Optional BCC email address string.'),
-      mailFormat:  z.string().optional().describe('Optional mail format value if required by Zoho Mail.'),
+      content:     z.string().describe('Email body content. HTML is supported.'),
+      askReceipt:  z.string().optional().default('no').describe('Receipt flag: "no" or "yes".'),
+      ccAddress:   z.string().optional().describe('Optional CC address string.'),
+      bccAddress:  z.string().optional().describe('Optional BCC address string.'),
+      mailFormat:  z.string().optional().describe('Optional mail format, e.g. "html".'),
     },
     async (args) => {
       const { accountId, ...body } = args;
@@ -726,15 +723,13 @@ function createMcpServer() {
           type: 'text',
           text: JSON.stringify(
             await zohoRequest({ product: 'mail', method: 'POST', path: `accounts/${accountId}/messages`, body }),
-            null,
-            2
+            null, 2
           ),
         }],
       };
     }
   );
 
-  // zoho_auth_info
   server.tool(
     'zoho_auth_info',
     'Show which Zoho credential sources this MCP server will use for CRM and Mail without returning secret values.',
@@ -755,13 +750,14 @@ function createMcpServer() {
     }
   );
 
-  console.log(`[${SERVER_NAME}] MCP server instance created (singleton)`);
+  console.log(`[${SERVER_NAME}] MCP singleton server created`);
   return server;
 }
 
-//create instance for single time
+// ✅ Singleton server — registered tools persist across all requests
 const mcpServer = createMcpServer();
 
+// ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.post('/mcp', async (req, res) => {
   try {
@@ -772,15 +768,18 @@ app.post('/mcp', async (req, res) => {
 
     console.log('Received MCP request with body:', req.body);
 
+    // ✅ New transport per request (holds per-request HTTP stream state)
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
 
+    // ✅ connect() per request is fine in stateless mode — SDK handles it
     await mcpServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
 
     res.on('close', async () => {
+      // ✅ Close transport only — NEVER close the server
       await transport.close().catch(() => {});
     });
   } catch (error) {
@@ -800,18 +799,20 @@ app.get('/mcp', async (req, res) => {
   if (code) {
     const accountsServer = req.query['accounts-server'];
     const redirectUri = env('ZOHO_REDIRECT_URI');
-    console.log(`Received OAuth callback with code: ${code}, accountsServer: ${accountsServer}`);
-    console.log(`Using redirect URI: ${redirectUri}`);
     const clientId = env('ZOHO_CLIENT_ID');
     const clientSecret = env('ZOHO_CLIENT_SECRET');
-    console.log(`Client ID: ${clientId ? 'present' : 'missing'} | Client Secret: ${clientSecret ? 'present' : 'missing'}`);
+    console.log(`OAuth callback — clientId: ${clientId ? 'present' : 'missing'}, clientSecret: ${clientSecret ? 'present' : 'missing'}`);
     if (clientId && clientSecret) {
       try {
         const tokenResponse = await exchangeZohoAuthorizationCode({
           accountsBaseUrl: accountsServer || 'https://accounts.zoho.com',
           clientId, clientSecret, redirectUri, code,
         });
-        return res.json({ ok: true, message: 'Authorization code exchanged. Persist the refresh_token in your env.', tokenResponse });
+        return res.json({
+          ok: true,
+          message: 'Authorization code exchanged. Persist the refresh_token in your env.',
+          tokenResponse,
+        });
       } catch (error) {
         return res.status(500).json({ ok: false, message: error.message });
       }
@@ -828,6 +829,7 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, transport: 'http' });
 });
 
+// ─── Start ───────────────────────────────────────────────────────────────────
 
 const PORT = Number(env('PORT', '3000'));
 app.listen(PORT, () => {
