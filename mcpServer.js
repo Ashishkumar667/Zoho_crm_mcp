@@ -148,12 +148,16 @@ async function getZohoAccessToken(product) {
   const config = resolveZohoConfig();
   const directToken = product === 'crm' ? config.crmAccessToken : config.mailAccessToken;
   if (directToken) return { token: directToken, config, source: 'env access token' };
+  console.log(`No direct access token found in env for Zoho ${product}, using refresh token flow.`);
   const refreshedToken = await refreshZohoAccessToken(config, product);
+  console.log(`Obtained refreshed access token for Zoho ${product} through refresh token flow.`);
   return { token: refreshedToken, config, source: 'refresh token flow' };
 }
 
 async function zohoRequest({ product, method, path, query, body, headers: extraHeaders }) {
+  console.log(`Resolving access token for Zoho ${product} request...`);
   const { token, config, source } = await getZohoAccessToken(product);
+  console.log(`Using Zoho ${product} access token from ${source} and ${token}`);
   const baseUrl = product === 'crm' ? config.crmBaseUrl : config.mailBaseUrl;
   const url = buildUrl(baseUrl, path, query);
   const normalizedMethod = normalizeMethod(method);
