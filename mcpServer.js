@@ -300,12 +300,15 @@ function getServer() {
 app.post('/mcp', async (req, res) => {
   try {
     const server = getServer();
-    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
-    res.on('close', () => {
-      transport.close();
-      server.close();
+    res.on('close', async () => {
+      await transport.close().catch(() => {});
+      await server.close().catch(() => {});
     });
   } catch (error) {
     console.error('Error handling MCP request:', error);
