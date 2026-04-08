@@ -436,7 +436,6 @@ dotenv.config();
 const app = express();
 app.use(express.json());
 
-// ─── Helpers ────────────────────────────────────────────────────────────────
 
 function env(name, fallback = undefined) {
   return process.env[name] || fallback;
@@ -489,7 +488,6 @@ function buildUrl(baseUrl, requestPath, query = {}) {
   return url.toString();
 }
 
-// ─── Zoho Auth ──────────────────────────────────────────────────────────────
 
 function resolveZohoConfig() {
   const dataCenter = getConfigValue('ZOHO_DATA_CENTER', 'com');
@@ -579,7 +577,7 @@ async function getZohoAccessToken(product) {
 async function zohoRequest({ product, method, path, query, body, headers: extraHeaders }) {
   console.log(`Resolving access token for Zoho ${product} request...`);
   const { token, config, source } = await getZohoAccessToken(product);
-  console.log(`Using Zoho ${product} access token from: ${source}`);
+  console.log(`Using Zoho ${product} access token from ${source}`);
   const baseUrl = product === 'crm' ? config.crmBaseUrl : config.mailBaseUrl;
   const url = buildUrl(baseUrl, path, query);
   const normalizedMethod = normalizeMethod(method);
@@ -623,7 +621,6 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
   return result;
 }
 
-// ─── MCP Server ──────────────────────────────────────────────────────────────
 
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
@@ -717,7 +714,7 @@ function createMcpServer() {
       toAddress:   z.string().describe('Recipient email address. For multiple recipients, send a comma-separated string if Zoho accepts it for your account.'),
       subject:     z.string().describe('Email subject line.'),
       content:     z.string().describe('Email body content. HTML is allowed if supported by the target Zoho Mail API endpoint.'),
-      askReceipt:  z.string().optional().default('no').describe('Delivery or read receipt flag. Usually "no" or "yes".'),
+      askReceipt:  z.string().optional().default('no').describe('Delivery or read receipt flag expected by Zoho Mail. Usually "no" or "yes".'),
       ccAddress:   z.string().optional().describe('Optional CC email address string.'),
       bccAddress:  z.string().optional().describe('Optional BCC email address string.'),
       mailFormat:  z.string().optional().describe('Optional mail format value if required by Zoho Mail.'),
@@ -758,31 +755,16 @@ function createMcpServer() {
     }
   );
 
+  console.log(`[${SERVER_NAME}] MCP server instance created (singleton)`);
   return server;
 }
 
-// ─── Singletons — created ONCE, shared across ALL requests ──────────────────
-
+//create instance for single time
 const mcpServer = createMcpServer();
 
-const mcpTransport = new StreamableHTTPServerTransport({
-  sessionIdGenerator: undefined,  // stateless mode
-  enableJsonResponse: true,
-});
-
-// Connect server to transport once at startup
-mcpServer.connect(mcpTransport).then(() => {
-  console.log(`[${SERVER_NAME}] MCP server connected to transport (stateless mode)`);
-}).catch((err) => {
-  console.error(`[${SERVER_NAME}] Failed to connect MCP server to transport:`, err);
-  process.exit(1);
-});
-
-// ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.post('/mcp', async (req, res) => {
   try {
-    // Ensure Accept header satisfies MCP SDK requirements
     const acceptHeader = String(req.headers.accept || '');
     if (!acceptHeader.includes('application/json') || !acceptHeader.includes('text/event-stream')) {
       req.headers.accept = 'application/json, text/event-stream';
@@ -790,8 +772,17 @@ app.post('/mcp', async (req, res) => {
 
     console.log('Received MCP request with body:', req.body);
 
-    // ✅ No connect() here — just route the request through the shared transport
-    await mcpTransport.handleRequest(req, res, req.body);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+
+    await mcpServer.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+
+    res.on('close', async () => {
+      await transport.close().catch(() => {});
+    });
   } catch (error) {
     console.error('Error handling MCP request:', error);
     if (!res.headersSent) {
@@ -809,9 +800,11 @@ app.get('/mcp', async (req, res) => {
   if (code) {
     const accountsServer = req.query['accounts-server'];
     const redirectUri = env('ZOHO_REDIRECT_URI');
+    console.log(`Received OAuth callback with code: ${code}, accountsServer: ${accountsServer}`);
+    console.log(`Using redirect URI: ${redirectUri}`);
     const clientId = env('ZOHO_CLIENT_ID');
     const clientSecret = env('ZOHO_CLIENT_SECRET');
-    console.log(`OAuth callback — code present, clientId: ${clientId ? 'present' : 'missing'}, clientSecret: ${clientSecret ? 'present' : 'missing'}`);
+    console.log(`Client ID: ${clientId ? 'present' : 'missing'} | Client Secret: ${clientSecret ? 'present' : 'missing'}`);
     if (clientId && clientSecret) {
       try {
         const tokenResponse = await exchangeZohoAuthorizationCode({
@@ -835,7 +828,6 @@ app.get('/health', (req, res) => {
   res.json({ ok: true, server: SERVER_NAME, version: SERVER_VERSION, transport: 'http' });
 });
 
-// ─── Start ───────────────────────────────────────────────────────────────────
 
 const PORT = Number(env('PORT', '3000'));
 app.listen(PORT, () => {
