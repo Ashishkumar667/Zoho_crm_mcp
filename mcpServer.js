@@ -434,7 +434,9 @@ const SERVER_VERSION = '1.1.0';
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+
+// ✅ Do NOT use express.json() globally — the MCP route needs the raw body.
+// We parse JSON manually only for non-MCP routes that need it.
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -487,6 +489,28 @@ function buildUrl(baseUrl, requestPath, query = {}) {
     url.searchParams.set(key, String(value));
   }
   return url.toString();
+}
+
+// ─── Raw body reader ─────────────────────────────────────────────────────────
+// Reads the raw request body as a Buffer, then parses JSON from it.
+// This avoids express.json() consuming the stream before the MCP SDK sees it.
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const raw = Buffer.concat(chunks);
+        const text = raw.toString('utf8');
+        resolve(text ? JSON.parse(text) : {});
+      } catch (err) {
+        reject(new Error(`Failed to parse request body as JSON: ${err.message}`));
+      }
+    });
+    req.on('error', reject);
+    req.on('aborted', () => reject(new Error('Request aborted by client')));
+  });
 }
 
 // ─── Zoho Auth ──────────────────────────────────────────────────────────────
@@ -568,16 +592,14 @@ async function getZohoAccessToken(product) {
   const config = resolveZohoConfig();
   const directToken = product === 'crm' ? config.crmAccessToken : config.mailAccessToken;
   if (directToken) return { token: directToken, config, source: 'env access token' };
-  console.log(`No direct access token found in env for Zoho ${product}, using refresh token flow.`);
+  console.log(`No direct access token for Zoho ${product}, using refresh token flow.`);
   const refreshedToken = await refreshZohoAccessToken(config, product);
-  console.log(`Obtained refreshed access token for Zoho ${product} through refresh token flow.`);
   return { token: refreshedToken, config, source: 'refresh token flow' };
 }
 
 async function zohoRequest({ product, method, path, query, body, headers: extraHeaders }) {
-  console.log(`Resolving access token for Zoho ${product} request...`);
   const { token, config, source } = await getZohoAccessToken(product);
-  console.log(`Using Zoho ${product} access token from: ${source}`);
+  console.log(`[zoho-mcp] Zoho ${product} token source: ${source}`);
   const baseUrl = product === 'crm' ? config.crmBaseUrl : config.mailBaseUrl;
   const url = buildUrl(baseUrl, path, query);
   const normalizedMethod = normalizeMethod(method);
@@ -600,14 +622,15 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
     url,
     { method: normalizedMethod, headers: outboundHeaders, body: outboundBody },
     getTimeoutMs('ZOHO_API_TIMEOUT_MS', 25000),
-    `Zoho ${product} request ${normalizedMethod} ${path}`
+    `Zoho ${product} ${normalizedMethod} ${path}`
   );
 
   const text = await response.text();
   let payload = text;
   try { payload = text ? JSON.parse(text) : null; } catch (_) { payload = text; }
 
-  const result = {
+  console.log(`[zoho-mcp] upstream done product=${product} status=${response.status} durationMs=${Date.now() - startedAt}`);
+  return {
     ok: response.ok,
     status: response.status,
     statusText: response.statusText,
@@ -615,17 +638,9 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
     request: { product, method: normalizedMethod, url },
     response: payload,
   };
-  console.log(
-    `[zoho-mcp] upstream done product=${product} method=${normalizedMethod} status=${response.status} durationMs=${Date.now() - startedAt}`
-  );
-  return result;
 }
 
 // ─── MCP Server (singleton) ──────────────────────────────────────────────────
-// One McpServer for the lifetime of the process.
-// One NEW transport per request — transport holds per-request HTTP state.
-// server.connect(transport) per request is supported by the SDK in stateless mode.
-// server.close() is NEVER called — only transport.close() on request end.
 
 function createMcpServer() {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
@@ -658,7 +673,6 @@ function createMcpServer() {
       authUrl.searchParams.set('prompt', args?.prompt || 'consent');
 
       const tokenUrl = `${config.accountsBaseUrl.replace(/\/+$/, '')}/oauth/v2/token`;
-
       return {
         content: [{
           type: 'text',
@@ -707,7 +721,7 @@ function createMcpServer() {
     'Send an email through a Zoho Mail account. Use this instead of zoho_mail_request when sending mail so required fields are explicit.',
     {
       accountId:   z.string().describe('Zoho Mail account ID.'),
-      fromAddress: z.string().describe('Sender email address. Must exist in the Zoho Mail account you are sending from.'),
+      fromAddress: z.string().describe('Sender email address. Must exist in the Zoho Mail account.'),
       toAddress:   z.string().describe('Recipient email address. Comma-separated for multiple.'),
       subject:     z.string().describe('Email subject line.'),
       content:     z.string().describe('Email body content. HTML is supported.'),
@@ -754,19 +768,27 @@ function createMcpServer() {
   return server;
 }
 
-// ✅ Singleton server — registered tools persist across all requests
 const mcpServer = createMcpServer();
 
 // ─── Routes ──────────────────────────────────────────────────────────────────
 
 app.post('/mcp', async (req, res) => {
   try {
+    // ✅ Keep-alive prevents the gateway from dropping the connection
+    // between the initialize handshake and the actual tool call
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Keep-Alive', 'timeout=120');
+
+    // Ensure Accept header satisfies MCP SDK requirements
     const acceptHeader = String(req.headers.accept || '');
     if (!acceptHeader.includes('application/json') || !acceptHeader.includes('text/event-stream')) {
       req.headers.accept = 'application/json, text/event-stream';
     }
 
-    console.log('Received MCP request with body:', req.body);
+    // ✅ Read and parse the raw body ourselves — do NOT rely on express.json()
+    // express.json() consumes the stream; the MCP SDK needs to see the raw request
+    const parsedBody = await readRawBody(req);
+    console.log('Received MCP request with body:', parsedBody);
 
     // ✅ New transport per request (holds per-request HTTP stream state)
     const transport = new StreamableHTTPServerTransport({
@@ -774,12 +796,13 @@ app.post('/mcp', async (req, res) => {
       enableJsonResponse: true,
     });
 
-    // ✅ connect() per request is fine in stateless mode — SDK handles it
+    // ✅ connect() per request is fine in stateless mode
     await mcpServer.connect(transport);
-    await transport.handleRequest(req, res, req.body);
+
+    // ✅ Pass the already-parsed body so the transport doesn't try to re-read the stream
+    await transport.handleRequest(req, res, parsedBody);
 
     res.on('close', async () => {
-      // ✅ Close transport only — NEVER close the server
       await transport.close().catch(() => {});
     });
   } catch (error) {
@@ -794,14 +817,14 @@ app.post('/mcp', async (req, res) => {
   }
 });
 
-app.get('/mcp', async (req, res) => {
+app.get('/mcp', express.json(), async (req, res) => {
   const code = req.query.code;
   if (code) {
     const accountsServer = req.query['accounts-server'];
     const redirectUri = env('ZOHO_REDIRECT_URI');
     const clientId = env('ZOHO_CLIENT_ID');
     const clientSecret = env('ZOHO_CLIENT_SECRET');
-    console.log(`OAuth callback — clientId: ${clientId ? 'present' : 'missing'}, clientSecret: ${clientSecret ? 'present' : 'missing'}`);
+    console.log(`OAuth callback — clientId: ${clientId ? 'present' : 'missing'}`);
     if (clientId && clientSecret) {
       try {
         const tokenResponse = await exchangeZohoAuthorizationCode({
@@ -832,6 +855,11 @@ app.get('/health', (req, res) => {
 // ─── Start ───────────────────────────────────────────────────────────────────
 
 const PORT = Number(env('PORT', '3000'));
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`[${SERVER_NAME}] v${SERVER_VERSION} listening on port ${PORT}`);
 });
+
+// ✅ Increase server-level keep-alive and header timeout to outlast the gateway's
+// 60-second tool execution window
+server.keepAliveTimeout = 120_000;
+server.headersTimeout   = 125_000;
