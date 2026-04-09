@@ -206,28 +206,176 @@ async function zohoRequest({ product, method, path, query, body, headers: extraH
 }
 
 //mcp-server factory
+// function getServer() {
+//   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+//   console.log("server is updating..", server);
+//   // zoho_oauth_helper
+//   server.tool(
+//     'zoho_oauth_helper',
+//     'Build a Zoho OAuth authorization URL and show the token exchange request needed to obtain the first access token and refresh token.',
+//     {
+//       scopes:      z.array(z.string()).optional().describe('Optional list of Zoho scopes.'),
+//       redirectUri: z.string().optional().describe('Optional redirect URI.'),
+//       accessType:  z.string().optional().default('offline').describe('offline or online.'),
+//       prompt:      z.string().optional().default('consent').describe('Usually consent.'),
+//     },
+//     async (args) => {
+//       const config = resolveZohoConfig();
+//       const redirectUri = args?.redirectUri || env('ZOHO_REDIRECT_URI');
+//       const scopes = Array.isArray(args?.scopes) && args.scopes.length
+//         ? args.scopes
+//         : ['ZohoCRM.modules.contacts.READ', 'ZohoCRM.modules.contacts.ALL', 'ZohoMail.accounts.READ', 'ZohoMail.messages.ALL'];
+
+//       if (!config.clientId) throw new Error('Missing ZOHO_CLIENT_ID in env.');
+//       if (!redirectUri) throw new Error('Missing redirect URI. Provide redirectUri or set ZOHO_REDIRECT_URI in env.');
+
+//       const authUrl = new URL(`${config.accountsBaseUrl.replace(/\/+$/, '')}/oauth/v2/auth`);
+//       authUrl.searchParams.set('response_type', 'code');
+//       authUrl.searchParams.set('client_id', config.clientId);
+//       authUrl.searchParams.set('redirect_uri', redirectUri);
+//       authUrl.searchParams.set('scope', scopes.join(','));
+//       authUrl.searchParams.set('access_type', args?.accessType || 'offline');
+//       authUrl.searchParams.set('prompt', args?.prompt || 'consent');
+
+//       const tokenUrl = `${config.accountsBaseUrl.replace(/\/+$/, '')}/oauth/v2/token`;
+
+//       return {
+//         content: [{
+//           type: 'text',
+//           text: JSON.stringify({
+//             oauthAuthorizationUrl: authUrl.toString(),
+//             tokenUrl,
+//             curlExample: `curl --request POST "${tokenUrl}" --header "Content-Type: application/x-www-form-urlencoded" --data "grant_type=authorization_code&client_id=${encodeURIComponent(config.clientId)}&client_secret=<SECRET>&redirect_uri=${encodeURIComponent(redirectUri)}&code=<CODE>"`,
+//           }, null, 2),
+//         }],
+//       };
+//     }
+//   );
+
+//   // zoho_crm_request
+//   server.tool(
+//     'zoho_crm_request',
+//     'Call any Zoho CRM REST API endpoint. Auth is resolved from environment variables only.',
+//     {
+//       path:    z.string().describe('Zoho CRM API path, e.g. Contacts or Contacts/search.'),
+//       method:  z.string().optional().default('GET').describe('HTTP method: GET, POST, PUT, PATCH, DELETE.'),
+//       query:   z.record(z.string(), z.string()).optional().describe('Optional query string parameters.'),
+//       body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
+//       headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
+//     },
+//     async (args) => {
+//       return {
+//         content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'crm', ...args }), null, 2) }],
+//       };
+//     }
+//   );
+
+//   // zoho_mail_request
+//   server.tool(
+//     'zoho_mail_request',
+//     'Call any Zoho Mail REST API endpoint. Auth is resolved from environment variables only.',
+//     {
+//       path:    z.string().describe('Zoho Mail API path, e.g. accounts or accounts/{accountId}/messages/view.'),
+//       method:  z.string().optional().default('GET').describe('HTTP method: GET, POST, PUT, PATCH, DELETE.'),
+//       query:   z.record(z.string(), z.string()).optional().describe('Optional query string parameters.'),
+//       body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
+//       headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
+//     },
+//     async (args) => {
+//       return {
+//         content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'mail', ...args }), null, 2) }],
+//       };
+//     }
+//   );
+
+//   // zoho_mail_send_message
+//   server.tool(
+//     'zoho_mail_send_message',
+//     'Send an email through a Zoho Mail account. Use this instead of zoho_mail_request when sending mail so required fields are explicit.',
+//     {
+//       accountId: z.string().describe('Zoho Mail account ID.'),
+//       fromAddress: z.string().describe('Sender email address. Must exist in the Zoho Mail account you are sending from.'),
+//       toAddress: z.string().describe('Recipient email address. For multiple recipients, send a comma-separated string if Zoho accepts it for your account.'),
+//       subject: z.string().describe('Email subject line.'),
+//       content: z.string().describe('Email body content. HTML is allowed if supported by the target Zoho Mail API endpoint.'),
+//       askReceipt: z.string().optional().default('no').describe('Delivery or read receipt flag expected by Zoho Mail. Usually "no" or "yes".'),
+//       ccAddress: z.string().optional().describe('Optional CC email address string.'),
+//       bccAddress: z.string().optional().describe('Optional BCC email address string.'),
+//       mailFormat: z.string().optional().describe('Optional mail format value if required by Zoho Mail.'),
+//       mode: z.string().optional().default('send').describe('Use "draft" to save or "send" to deliver.'),
+//     },
+//     async (args) => {
+//       const { accountId, ...body } = args;
+//       return {
+//         content: [{
+//           type: 'text',
+//           text: JSON.stringify(
+//             await zohoRequest({
+//               product: 'mail',
+//               method: 'POST',
+//               path: `accounts/${accountId}/messages`,
+//               body,
+//             }),
+//             null,
+//             2
+//           ),
+//         }],
+//       };
+//     }
+//   );
+
+//   // zoho_auth_info
+//   server.tool(
+//     'zoho_auth_info',
+//     'Show which Zoho credential sources this MCP server will use for CRM and Mail without returning secret values.',
+//     {},
+//     async () => {
+//       const config = resolveZohoConfig();
+//       return {
+//         content: [{
+//           type: 'text',
+//           text: JSON.stringify({
+//             dataCenter: config.dataCenter,
+//             crm:  { baseUrl: config.crmBaseUrl,  accessTokenSource: config.crmAccessToken  ? 'env access token' : 'refresh token flow' },
+//             mail: { baseUrl: config.mailBaseUrl, accessTokenSource: config.mailAccessToken ? 'env access token' : 'refresh token flow' },
+//             sharedRefreshCredentialsAvailable: Boolean(config.clientId && config.clientSecret && config.refreshToken),
+//           }, null, 2),
+//         }],
+//       };
+//     }
+//   );
+
+//   return server;
+// }
 function getServer() {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
-  console.log("server is updating..", server);
-  // zoho_oauth_helper
+  console.log("Server instance updating with optimized Zoho schemas...");
+
+  //  zoho_oauth_helper: Expanded scopes for full access
   server.tool(
     'zoho_oauth_helper',
-    'Build a Zoho OAuth authorization URL and show the token exchange request needed to obtain the first access token and refresh token.',
+    'Generate a Zoho OAuth URL. Use this to authorize a new user or refresh permissions.',
     {
-      scopes:      z.array(z.string()).optional().describe('Optional list of Zoho scopes.'),
-      redirectUri: z.string().optional().describe('Optional redirect URI.'),
-      accessType:  z.string().optional().default('offline').describe('offline or online.'),
-      prompt:      z.string().optional().default('consent').describe('Usually consent.'),
+      scopes: z.array(z.string()).optional().describe('Zoho scopes. Default includes all CRM and Mail permissions.'),
+      redirectUri: z.string().optional().describe('The URI Zoho redirects to after auth.'),
+      accessType: z.string().optional().default('offline').describe('Set to "offline" to receive a refresh_token.'),
+      prompt: z.string().optional().default('consent').describe('Forces the consent screen to show.'),
     },
     async (args) => {
       const config = resolveZohoConfig();
       const redirectUri = args?.redirectUri || env('ZOHO_REDIRECT_URI');
-      const scopes = Array.isArray(args?.scopes) && args.scopes.length
-        ? args.scopes
-        : ['ZohoCRM.modules.contacts.READ', 'ZohoCRM.modules.contacts.ALL', 'ZohoMail.accounts.READ', 'ZohoMail.messages.ALL'];
+      const scopes = args?.scopes?.length ? args.scopes : [
+        'ZohoCRM.modules.ALL',
+        'ZohoCRM.settings.ALL',
+        'ZohoCRM.users.READ',
+        'ZohoMail.accounts.READ',
+        'ZohoMail.messages.ALL',
+        'ZohoMail.messages.CREATE',
+        'ZohoMail.messages.UPDATE'
+      ];
 
-      if (!config.clientId) throw new Error('Missing ZOHO_CLIENT_ID in env.');
-      if (!redirectUri) throw new Error('Missing redirect URI. Provide redirectUri or set ZOHO_REDIRECT_URI in env.');
+      if (!config.clientId) throw new Error('Missing ZOHO_CLIENT_ID.');
+      if (!redirectUri) throw new Error('Missing redirect URI.');
 
       const authUrl = new URL(`${config.accountsBaseUrl.replace(/\/+$/, '')}/oauth/v2/auth`);
       authUrl.searchParams.set('response_type', 'code');
@@ -237,49 +385,56 @@ function getServer() {
       authUrl.searchParams.set('access_type', args?.accessType || 'offline');
       authUrl.searchParams.set('prompt', args?.prompt || 'consent');
 
-      const tokenUrl = `${config.accountsBaseUrl.replace(/\/+$/, '')}/oauth/v2/token`;
-
       return {
         content: [{
           type: 'text',
           text: JSON.stringify({
+            instruction: "Visit this URL to authorize, then exchange the code via the /mcp GET route.",
             oauthAuthorizationUrl: authUrl.toString(),
-            tokenUrl,
-            curlExample: `curl --request POST "${tokenUrl}" --header "Content-Type: application/x-www-form-urlencoded" --data "grant_type=authorization_code&client_id=${encodeURIComponent(config.clientId)}&client_secret=<SECRET>&redirect_uri=${encodeURIComponent(redirectUri)}&code=<CODE>"`,
+            requiredScopes: scopes
           }, null, 2),
         }],
       };
     }
   );
 
-  // zoho_crm_request
+  // zoho_crm_request: Fixed for v6 strictness
   server.tool(
     'zoho_crm_request',
-    'Call any Zoho CRM REST API endpoint. Auth is resolved from environment variables only.',
+    'Execute REST calls to Zoho CRM (v6). IMPORTANT: For GET requests on modules (Leads, Contacts, etc.), the "fields" parameter is REQUIRED in the query. For POST/PUT, the body MUST be wrapped in a "data" array.',
     {
-      path:    z.string().describe('Zoho CRM API path, e.g. Contacts or Contacts/search.'),
-      method:  z.string().optional().default('GET').describe('HTTP method: GET, POST, PUT, PATCH, DELETE.'),
-      query:   z.record(z.string(), z.string()).optional().describe('Optional query string parameters.'),
-      body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
-      headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
+      path: z.string().describe('API endpoint path (e.g., "Leads", "Contacts/{id}", "Accounts/search").'),
+      method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional().default('GET'),
+      query: z.record(z.string(), z.string()).optional().describe('URL parameters. Always include "fields": "Last_Name,Email,..." for GET requests.'),
+      body: z.object({
+        data: z.array(z.any()).optional().describe('CRM records must be inside this array.')
+      }).catchall(z.unknown()).optional().describe('The request body object.'),
     },
     async (args) => {
+      // Logic Safeguard: If LLM forgets fields for a module list, inject common defaults
+      const isModuleList = !args.path.includes('/') && args.method === 'GET';
+      if (isModuleList && (!args.query || !args.query.fields)) {
+        args.query = { 
+          ...(args.query || {}), 
+          fields: 'id,Last_Name,First_Name,Email,Company,Account_Name,Full_Name' 
+        };
+      }
+
       return {
         content: [{ type: 'text', text: JSON.stringify(await zohoRequest({ product: 'crm', ...args }), null, 2) }],
       };
     }
   );
 
-  // zoho_mail_request
+  // zoho_mail_request: Generic Mail helper
   server.tool(
     'zoho_mail_request',
-    'Call any Zoho Mail REST API endpoint. Auth is resolved from environment variables only.',
+    'Execute REST calls to Zoho Mail. Use for fetching folders, listing messages, or account management.',
     {
-      path:    z.string().describe('Zoho Mail API path, e.g. accounts or accounts/{accountId}/messages/view.'),
-      method:  z.string().optional().default('GET').describe('HTTP method: GET, POST, PUT, PATCH, DELETE.'),
-      query:   z.record(z.string(), z.string()).optional().describe('Optional query string parameters.'),
-      body:    z.object({}).catchall(z.unknown()).optional().describe('Optional JSON request body as an object.'),
-      headers: z.record(z.string(), z.string()).optional().describe('Optional additional headers.'),
+      path: z.string().describe('Endpoint path (e.g., "accounts/{accountId}/folders", "accounts/{accountId}/messages/view").'),
+      method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).optional().default('GET'),
+      query: z.record(z.string(), z.string()).optional(),
+      body: z.object({}).catchall(z.unknown()).optional(),
     },
     async (args) => {
       return {
@@ -288,24 +443,24 @@ function getServer() {
     }
   );
 
-  // zoho_mail_send_message
+  // zoho_mail_send_message: Optimized for sending/drafting
   server.tool(
     'zoho_mail_send_message',
-    'Send an email through a Zoho Mail account. Use this instead of zoho_mail_request when sending mail so required fields are explicit.',
+    'Send or Draft an email. Use mode="draft" for very large content to prevent timeouts.',
     {
-      accountId: z.string().describe('Zoho Mail account ID.'),
-      fromAddress: z.string().describe('Sender email address. Must exist in the Zoho Mail account you are sending from.'),
-      toAddress: z.string().describe('Recipient email address. For multiple recipients, send a comma-separated string if Zoho accepts it for your account.'),
-      subject: z.string().describe('Email subject line.'),
-      content: z.string().describe('Email body content. HTML is allowed if supported by the target Zoho Mail API endpoint.'),
-      askReceipt: z.string().optional().default('no').describe('Delivery or read receipt flag expected by Zoho Mail. Usually "no" or "yes".'),
-      ccAddress: z.string().optional().describe('Optional CC email address string.'),
-      bccAddress: z.string().optional().describe('Optional BCC email address string.'),
-      mailFormat: z.string().optional().describe('Optional mail format value if required by Zoho Mail.'),
-      mode: z.string().optional().default('send').describe('Use "draft" to save or "send" to deliver.'),
+      accountId: z.string().describe('The Zoho Account ID (use zoho_mail_request path "accounts" to find this).'),
+      fromAddress: z.string().describe('Verified sender email.'),
+      toAddress: z.string().describe('Recipient email(s), comma-separated.'),
+      subject: z.string().describe('Email subject.'),
+      content: z.string().describe('HTML or Plain text body content.'),
+      mode: z.enum(['send', 'draft']).optional().default('send').describe('Use "draft" for high-latency or large emails.'),
+      mailFormat: z.enum(['html', 'plaintext']).optional().default('html'),
+      ccAddress: z.string().optional(),
+      bccAddress: z.string().optional(),
+      askReceipt: z.enum(['yes', 'no']).optional().default('no'),
     },
     async (args) => {
-      const { accountId, ...body } = args;
+      const { accountId, ...emailPayload } = args;
       return {
         content: [{
           type: 'text',
@@ -314,20 +469,19 @@ function getServer() {
               product: 'mail',
               method: 'POST',
               path: `accounts/${accountId}/messages`,
-              body,
+              body: emailPayload,
             }),
-            null,
-            2
+            null, 2
           ),
         }],
       };
     }
   );
 
-  // zoho_auth_info
+  //  zoho_auth_info: Connectivity Check
   server.tool(
     'zoho_auth_info',
-    'Show which Zoho credential sources this MCP server will use for CRM and Mail without returning secret values.',
+    'Check if the server is correctly configured with Zoho credentials.',
     {},
     async () => {
       const config = resolveZohoConfig();
@@ -336,9 +490,9 @@ function getServer() {
           type: 'text',
           text: JSON.stringify({
             dataCenter: config.dataCenter,
-            crm:  { baseUrl: config.crmBaseUrl,  accessTokenSource: config.crmAccessToken  ? 'env access token' : 'refresh token flow' },
-            mail: { baseUrl: config.mailBaseUrl, accessTokenSource: config.mailAccessToken ? 'env access token' : 'refresh token flow' },
-            sharedRefreshCredentialsAvailable: Boolean(config.clientId && config.clientSecret && config.refreshToken),
+            crmStatus: config.crmAccessToken ? 'Access Token' : 'Refresh Flow',
+            mailStatus: config.mailAccessToken ? 'Access Token' : 'Refresh Flow',
+            hasCredentials: !!(config.clientId && config.clientSecret && config.refreshToken),
           }, null, 2),
         }],
       };
